@@ -263,6 +263,172 @@ grub_net_configure_by_dhcp_ack (const char *name,
   return inter;
 }
 
+struct dhcp4_packet_option {
+	grub_uint8_t code;
+	grub_uint8_t length;
+	grub_uint8_t data[0];
+};
+
+/*
+ * Get specified option from DHCP extension data
+ *
+ * from PxeBcDhcp.c of UEFI
+ *
+ */
+static struct dhcp4_packet_option *
+dhcp_proxy_extension_option (const grub_uint8_t *buf,
+		grub_size_t size,
+		grub_uint8_t code)
+{
+	struct dhcp4_packet_option *option = (struct dhcp4_packet_option *)buf;
+	grub_size_t offset = 0;
+
+	while (offset < size && option->code != GRUB_NET_BOOTP_END) {
+		if (option->code == code)
+			return option;
+
+		if (option->code == GRUB_NET_BOOTP_PAD)
+			offset++;
+		else
+			offset += option->length + 2;
+
+		option = (struct dhcp4_packet_option *)(buf + offset);
+	}
+
+	return NULL;
+}
+
+#define PXE_CLASS_ID "PXEClient"
+
+static int
+proxy_offer_is_valid(const struct grub_net_bootp_packet *bp,
+		grub_size_t size)
+{
+	const grub_uint8_t *buf;
+	grub_uint32_t option_size;
+	struct dhcp4_packet_option *option;
+
+	if (size <= OFFSET_OF (vendor, bp) + sizeof (grub_uint32_t))
+		return 0;
+
+	if (bp->vendor[0] != GRUB_NET_BOOTP_RFC1048_MAGIC_0
+			|| bp->vendor[1] != GRUB_NET_BOOTP_RFC1048_MAGIC_1
+			|| bp->vendor[2] != GRUB_NET_BOOTP_RFC1048_MAGIC_2
+			|| bp->vendor[3] != GRUB_NET_BOOTP_RFC1048_MAGIC_3)
+		return 0;
+
+	buf = bp->vendor + sizeof (grub_uint32_t);
+	option_size = size - OFFSET_OF(vendor, bp) - sizeof (grub_uint32_t);
+	option = dhcp_proxy_extension_option(buf, option_size, GRUB_NET_DHCP_CLASS_ID);
+	if (option == NULL)
+		return 0;
+
+	if (option->length < grub_strlen(PXE_CLASS_ID))
+		return 0;
+
+	if (grub_strncmp(option->data, PXE_CLASS_ID, grub_strlen(PXE_CLASS_ID)))
+		return 0;
+
+	return 1;
+}
+
+void
+grub_net_configure_by_proxy_offer (const struct grub_net_bootp_packet *bp,
+				grub_size_t size,
+				char **device,
+				char **path)
+{
+	const grub_uint8_t *buf = bp->vendor + sizeof (grub_uint32_t);
+	grub_uint32_t option_size =
+		size - OFFSET_OF(vendor, bp) - sizeof (grub_uint32_t);
+	struct dhcp4_packet_option *option;
+
+	if (device == NULL)
+		return;
+
+	if (!proxy_offer_is_valid(bp, size))
+		return;
+
+	if (!*device && bp->server_ip)
+	{
+		*device = grub_xasprintf ("tftp,%d.%d.%d.%d",
+				((grub_uint8_t *) &bp->server_ip)[0],
+				((grub_uint8_t *) &bp->server_ip)[1],
+				((grub_uint8_t *) &bp->server_ip)[2],
+				((grub_uint8_t *) &bp->server_ip)[3]);
+		grub_print_error ();
+	}
+
+	option = dhcp_proxy_extension_option(buf,
+			option_size, GRUB_NET_DHCP_OVERLOAD);
+
+	if ((option == NULL || option->data[0] == 1) && !*device && bp->server_name[0])
+	{
+		*device = grub_xasprintf ("tftp,%s", bp->server_name);
+		grub_print_error ();
+	}
+
+	if (!*device)
+	{
+		option = dhcp_proxy_extension_option(buf,
+				option_size, GRUB_NET_DHCP_SERVER_ID);
+
+		if (option) {
+			*device = grub_xasprintf("tftp,%d.%d.%d.%d",
+					option->data[0],
+					option->data[1],
+					option->data[2],
+					option->data[3]);
+			grub_print_error ();
+		}
+	}
+
+	if (*device && grub_net_default_server == NULL)
+		grub_net_default_server = grub_strdup((*device) + 5);
+
+	if (path && !*path) {
+		option = dhcp_proxy_extension_option(buf,
+				option_size, GRUB_NET_DHCP_OVERLOAD);
+
+		if (option == NULL || option->data[0] == 2)
+		{
+			*path = grub_strndup (bp->boot_file, sizeof (bp->boot_file));
+			grub_print_error ();
+
+			if (*path)
+			{
+				char *slash;
+
+				slash = grub_strrchr (*path, '/');
+				if (slash)
+					*slash = 0;
+				else
+					**path = 0;
+			}
+		}
+		else
+		{
+			option = dhcp_proxy_extension_option(buf,
+					option_size, GRUB_NET_DHCP_BOOTFILE);
+			if (option) {
+				*path = grub_strndup (option->data, option->length);
+				grub_print_error ();
+
+				if (*path)
+				{
+					char *slash;
+
+					slash = grub_strrchr (*path, '/');
+					if (slash)
+						*slash = 0;
+					else
+						**path = 0;
+				}
+			}
+		}
+	}
+}
+
 void
 grub_net_process_dhcp (struct grub_net_buff *nb,
 		       struct grub_net_card *card)

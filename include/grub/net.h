@@ -433,6 +433,10 @@ enum
     GRUB_NET_BOOTP_DOMAIN = 0x0f,
     GRUB_NET_BOOTP_ROOT_PATH = 0x11,
     GRUB_NET_BOOTP_EXTENSIONS_PATH = 0x12,
+	GRUB_NET_DHCP_OVERLOAD = 0x34,
+	GRUB_NET_DHCP_SERVER_ID = 0x36,
+	GRUB_NET_DHCP_CLASS_ID = 0x3c,
+	GRUB_NET_DHCP_BOOTFILE = 0x43,
     GRUB_NET_BOOTP_END = 0xff
   };
 
@@ -443,6 +447,12 @@ grub_net_configure_by_dhcp_ack (const char *name,
 				const struct grub_net_bootp_packet *bp,
 				grub_size_t size,
 				int is_def, char **device, char **path);
+
+void
+grub_net_configure_by_proxy_offer (const struct grub_net_bootp_packet *bp,
+				grub_size_t size,
+				char **device,
+				char **path);
 
 grub_err_t
 grub_net_add_ipv4_local (struct grub_net_network_level_interface *inf,
